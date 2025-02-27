@@ -4,6 +4,8 @@ import json
 from typing import TypeVar, Type, Optional, Any
 from pydantic import BaseModel
 from utils.progress import progress
+from openai import OpenAI
+import os
 
 T = TypeVar('T', bound=BaseModel)
 
@@ -16,9 +18,10 @@ def call_llm(
     max_retries: int = 3,
     default_factory = None
 ) -> T:
+    print(f"Debug: model_provider = {model_provider}") 
     """
-    Makes an LLM call with retry logic, handling both Deepseek and non-Deepseek models.
-    
+    Makes an LLM call with retry logic, handling Deepseek, non-Deepseek and Tongyi Qianwen models.
+
     Args:
         prompt: The prompt to send to the LLM
         model_name: Name of the model to use
@@ -27,40 +30,75 @@ def call_llm(
         agent_name: Optional name of the agent for progress updates
         max_retries: Maximum number of retries (default: 3)
         default_factory: Optional factory function to create default response on failure
-        
+
     Returns:
         An instance of the specified Pydantic model
     """
     from llm.models import get_model, get_model_info
-    
+
     model_info = get_model_info(model_name)
-    llm = get_model(model_name, model_provider)
-    
-    # For non-Deepseek models, we can use structured output
-    if not (model_info and model_info.is_deepseek()):
-        llm = llm.with_structured_output(
-            pydantic_model,
-            method="json_mode",
+
+    # Check if the model is from Alibaba (Tongyi Qianwen)
+    is_tongyi_qianwen = model_provider == "Alibaba"
+    is_groq = model_provider == "GROQ"
+    is_openai = model_provider == "OPENAI"
+    is_anthropic = model_provider == "ANTHROPIC"
+
+    if is_tongyi_qianwen:
+        # Set up the OpenAI client for DashScope compatibility
+        client = OpenAI(
+            api_key=os.getenv("DASHSCOPE_API_KEY"),
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
         )
-    
+        # Add JSON output instruction to the prompt
+        json_prompt = f"请以JSON格式输出结果，示例：{{\"key\": \"value\"}}。{prompt}"
+        messages = [
+            {
+                "role": "system",
+                "content": json_prompt
+            },
+            {
+                "role": "user",
+                "content": "请按照上述要求输出结果"
+            }
+        ]
+    else:
+        llm = get_model(model_name, model_provider)
+        # For non-Deepseek models, we can use  output
+        if model_info and not model_info.is_deepseek():
+            llm = llm.with_structured_output(
+                pydantic_model,
+                method="json_mode",
+            )
+
     # Call the LLM with retries
     for attempt in range(max_retries):
         try:
-            # Call the LLM
-            result = llm.invoke(prompt)
-            
-            # For Deepseek, we need to extract and parse the JSON manually
-            if model_info and model_info.is_deepseek():
-                parsed_result = extract_json_from_deepseek_response(result.content)
-                if parsed_result:
-                    return pydantic_model(**parsed_result)
+            if is_tongyi_qianwen:
+                # Call Tongyi Qianwen
+                completion = client.chat.completions.create(
+                    model=model_name,
+                    messages=messages,
+                    response_format={"type": "json_object"}
+                )
+                json_string = completion.choices[0].message.content
+                parsed_result = json.loads(json_string)
+                return pydantic_model(**parsed_result)
             else:
-                return result
-                
+                # Call other models
+                result = llm.invoke(prompt)
+                # For Deepseek, we need to extract and parse the JSON manually
+                if model_info and model_info.is_deepseek():
+                    parsed_result = extract_json_from_deepseek_response(result.content)
+                    if parsed_result:
+                        return pydantic_model(**parsed_result)
+                else:
+                    return result
+
         except Exception as e:
             if agent_name:
                 progress.update_status(agent_name, None, f"Error - retry {attempt + 1}/{max_retries}")
-            
+
             if attempt == max_retries - 1:
                 print(f"Error in LLM call after {max_retries} attempts: {e}")
                 # Use default_factory if provided, otherwise create a basic default
@@ -89,7 +127,7 @@ def create_default_response(model_class: Type[T]) -> T:
                 default_values[field_name] = field.annotation.__args__[0]
             else:
                 default_values[field_name] = None
-    
+
     return model_class(**default_values)
 
 def extract_json_from_deepseek_response(content: str) -> Optional[dict]:

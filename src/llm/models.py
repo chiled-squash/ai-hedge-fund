@@ -5,14 +5,14 @@ from langchain_openai import ChatOpenAI
 from enum import Enum
 from pydantic import BaseModel
 from typing import Tuple
-
+from openai import OpenAI  # 导入OpenAI
 
 class ModelProvider(str, Enum):
     """Enum for supported LLM providers"""
     OPENAI = "OpenAI"
     GROQ = "Groq"
     ANTHROPIC = "Anthropic"
-
+    ALIBABA = "Alibaba"  # 添加新的提供者
 
 class LLMModel(BaseModel):
     """Represents an LLM model configuration"""
@@ -27,7 +27,6 @@ class LLMModel(BaseModel):
     def is_deepseek(self) -> bool:
         """Check if the model is a DeepSeek model"""
         return self.model_name.startswith("deepseek")
-
 
 # Define available models
 AVAILABLE_MODELS = [
@@ -76,6 +75,16 @@ AVAILABLE_MODELS = [
         model_name="o3-mini",
         provider=ModelProvider.OPENAI
     ),
+    LLMModel(
+        display_name="[alibaba] deepseek-r1",
+        model_name="deepseek-r1",
+        provider=ModelProvider.ALIBABA
+    ),
+    LLMModel(
+    display_name="[alibaba] qwen-max-latest",
+    model_name="qwen-max-latest",
+    provider=ModelProvider.ALIBABA
+    ),
 ]
 
 # Create LLM_ORDER in the format expected by the UI
@@ -85,7 +94,7 @@ def get_model_info(model_name: str) -> LLMModel | None:
     """Get model information by model_name"""
     return next((model for model in AVAILABLE_MODELS if model.model_name == model_name), None)
 
-def get_model(model_name: str, model_provider: ModelProvider) -> ChatOpenAI | ChatGroq | None:
+def get_model(model_name: str, model_provider: ModelProvider) -> ChatOpenAI | ChatGroq | OpenAI | None:  # 修改返回类型
     if model_provider == ModelProvider.GROQ:
         api_key = os.getenv("GROQ_API_KEY")
         if not api_key:
@@ -107,3 +116,13 @@ def get_model(model_name: str, model_provider: ModelProvider) -> ChatOpenAI | Ch
             print(f"API Key Error: Please make sure ANTHROPIC_API_KEY is set in your .env file.")
             raise ValueError("Anthropic API key not found.  Please make sure ANTHROPIC_API_KEY is set in your .env file.")
         return ChatAnthropic(model=model_name, api_key=api_key)
+    elif model_provider == ModelProvider.ALIBABA:  # 新增条件
+        api_key = os.getenv("DASHSCOPE_API_KEY")
+        if not api_key:
+            print(f"API Key Error: Please make sure DASHSCOPE_API_KEY is set in your .env file.")
+            raise ValueError("Dashscope API key not found.  Please make sure DASHSCOPE_API_KEY is set in your .env file.")
+        client = OpenAI(
+            api_key=api_key,
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
+        )
+        return client
